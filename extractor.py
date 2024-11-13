@@ -10,6 +10,7 @@ import types
 from pathlib import Path
 from typing import Union, List, Tuple
 from PIL import Image
+import numpy as np
 
 
 class ViTExtractor:
@@ -24,7 +25,7 @@ class ViTExtractor:
     d - the embedding dimension in the ViT.
     """
 
-    def __init__(self, model_type: str = 'dino_vits8', stride: int = 4, model: nn.Module = None, device: str = 'cuda'):
+    def __init__(self, model_type: str = 'dinov2_vits14_reg', stride: int = 4, model: nn.Module = None, device: str = 'cuda'):
         """
         :param model_type: A string specifying the type of model to extract from.
                           [dino_vits8 | dino_vits16 | dino_vitb8 | dino_vitb16 | vit_small_patch8_224 |
@@ -43,7 +44,7 @@ class ViTExtractor:
         self.model = ViTExtractor.patch_vit_resolution(self.model, stride=stride)
         self.model.eval()
         self.model.to(self.device)
-        self.p = self.model.patch_embed.patch_size
+        self.p = self.model.patch_embed.patch_size[0]
         self.stride = self.model.patch_embed.proj.stride
 
         self.mean = (0.485, 0.456, 0.406) if "dino" in self.model_type else (0.5, 0.5, 0.5)
@@ -62,21 +63,7 @@ class ViTExtractor:
                            vit_base_patch16_224]
         :return: the model
         """
-        if 'dino' in model_type:
-            model = torch.hub.load('facebookresearch/dino:main', model_type)
-        else:  # model from timm -- load weights from timm to dino model (enables working on arbitrary size images).
-            temp_model = timm.create_model(model_type, pretrained=True)
-            model_type_dict = {
-                'vit_small_patch16_224': 'dino_vits16',
-                'vit_small_patch8_224': 'dino_vits8',
-                'vit_base_patch16_224': 'dino_vitb16',
-                'vit_base_patch8_224': 'dino_vitb8'
-            }
-            model = torch.hub.load('facebookresearch/dino:main', model_type_dict[model_type])
-            temp_state_dict = temp_model.state_dict()
-            del temp_state_dict['head.weight']
-            del temp_state_dict['head.bias']
-            model.load_state_dict(temp_state_dict)
+        model = torch.hub.load('facebookresearch/dinov2', model_type)
         return model
 
     @staticmethod
@@ -123,7 +110,7 @@ class ViTExtractor:
         :param stride: the new stride parameter.
         :return: the adjusted model
         """
-        patch_size = model.patch_embed.patch_size
+        patch_size = model.patch_embed.patch_size[0]
         if stride == patch_size:  # nothing to do
             return model
 
@@ -149,7 +136,11 @@ class ViTExtractor:
         """
         pil_image = Image.open(image_path).convert('RGB')
         if load_size is not None:
-            pil_image = transforms.Resize(load_size, interpolation=transforms.InterpolationMode.LANCZOS)(pil_image)
+            aspect_ratio = pil_image.height / pil_image.width
+            target_height = int(round(load_size * aspect_ratio))
+            target_height = (target_height // 14) * 14  # Make height divisible by 14 (patchsize)
+
+            pil_image = transforms.Resize([target_height, load_size], interpolation=transforms.InterpolationMode.LANCZOS)(pil_image)
         prep = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=self.mean, std=self.std)
@@ -162,8 +153,18 @@ class ViTExtractor:
         generate a hook method for a specific block and facet.
         """
         if facet in ['attn', 'token']:
-            def _hook(model, input, output):
-                self._feats.append(output)
+            def _hook(module, input, output):
+                input = input[0]
+                B, num_patches, combined_head_dim = input.shape
+                head_dim = combined_head_dim // module.num_heads
+                scale = head_dim**-0.5
+                input = input[0]
+                qkv = module.qkv(input).reshape(B, num_patches, 3, module.num_heads, combined_head_dim // module.num_heads).permute(2, 0, 3, 1, 4)
+                q, k, _ = qkv[0] * scale, qkv[1], qkv[2]
+                attn = q @ k.transpose(-2, -1)
+                attn = attn.softmax(dim=-1)
+
+                self._feats.append(attn)
             return _hook
 
         if facet == 'query':
@@ -193,7 +194,7 @@ class ViTExtractor:
                 if facet == 'token':
                     self.hook_handlers.append(block.register_forward_hook(self._get_hook(facet)))
                 elif facet == 'attn':
-                    self.hook_handlers.append(block.attn.attn_drop.register_forward_hook(self._get_hook(facet)))
+                    self.hook_handlers.append(block.attn.register_forward_hook(self._get_hook(facet)))
                 elif facet in ['key', 'query', 'value']:
                     self.hook_handlers.append(block.attn.register_forward_hook(self._get_hook(facet)))
                 else:
@@ -276,7 +277,7 @@ class ViTExtractor:
         return bin_x
 
     def extract_descriptors(self, batch: torch.Tensor, layer: int = 11, facet: str = 'key',
-                            bin: bool = False, include_cls: bool = False) -> torch.Tensor:
+                            bin: bool = False, include_cls: bool = False, has_register: bool = False) -> torch.Tensor:
         """
         extract descriptors from the model
         :param batch: batch to extract descriptors for. Has shape BxCxHxW.
@@ -291,6 +292,8 @@ class ViTExtractor:
         x = self._feats[0]
         if facet == 'token':
             x.unsqueeze_(dim=1) #Bx1xtxd
+        if has_register:
+            x = torch.cat((x[:, :, :1, :], x[:, :, 5:, :]), dim=2) # remove 1,2,3,4 register tokens
         if not include_cls:
             x = x[:, :, 1:, :]  # remove cls token
         else:
@@ -301,18 +304,21 @@ class ViTExtractor:
             desc = self._log_bin(x)
         return desc
 
-    def extract_saliency_maps(self, batch: torch.Tensor) -> torch.Tensor:
+    def extract_saliency_maps(self, batch: torch.Tensor, layer: int = 11, num_heads: int = 6, has_register: bool = False) -> torch.Tensor:
         """
         extract saliency maps. The saliency maps are extracted by averaging several attention heads from the last layer
         in of the CLS token. All values are then normalized to range between 0 and 1.
         :param batch: batch to extract saliency maps for. Has shape BxCxHxW.
         :return: a tensor of saliency maps. has shape Bxt-1
         """
-        assert self.model_type == "dino_vits8", f"saliency maps are supported only for dino_vits model_type."
-        self._extract_features(batch, [11], 'attn')
-        head_idxs = [0, 2, 4, 5]
+        # assert self.model_type == "dino_vits8", f"saliency maps are supported only for dino_vits model_type."
+        self._extract_features(batch, [layer], 'attn')
+        head_idxs = np.append(np.arange(0, num_heads, 2), num_heads-1) # Every second head + last
         curr_feats = self._feats[0] #Bxhxtxt
-        cls_attn_map = curr_feats[:, head_idxs, 0, 1:].mean(dim=1) #Bx(t-1)
+        if has_register:
+            cls_attn_map = curr_feats[:, head_idxs, 0, 5:].mean(dim=1) #Bx(t-1-4)
+        else :
+            cls_attn_map = curr_feats[:, head_idxs, 0, 1:].mean(dim=1) #Bx(t-1)
         temp_mins, temp_maxs = cls_attn_map.min(dim=1)[0], cls_attn_map.max(dim=1)[0]
         cls_attn_maps = (cls_attn_map - temp_mins) / (temp_maxs - temp_mins)  # normalize to range [0,1]
         return cls_attn_maps

@@ -11,8 +11,9 @@ from matplotlib.colors import ListedColormap
 from typing import List, Tuple
 
 
-def find_correspondences(image_path1: str, image_path2: str, num_pairs: int = 10, load_size: int = 224, layer: int = 9,
-                         facet: str = 'key', bin: bool = True, thresh: float = 0.05, model_type: str = 'dino_vits8',
+def find_correspondences(image_path1: str, image_path2: str, num_pairs: int = 10, load_size: int = 224, layer: int = 9, 
+                         salency_layer: int = 11, num_heads: int = 6, register: bool = False,
+                         facet: str = 'key', bin: bool = True, thresh: float = 0.05, model_type: str = 'dinov2_vits14',
                          stride: int = 4, return_patches_x_y: bool = True) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]],
                                                                               Image.Image, Image.Image]:
     """
@@ -36,16 +37,16 @@ def find_correspondences(image_path1: str, image_path2: str, num_pairs: int = 10
     extractor = ViTExtractor(model_type, stride, device=device)
     image1_batch, image1_pil = extractor.preprocess(image_path1, load_size)
     print("image1_batch.size", image1_batch.size())
-    descriptors1 = extractor.extract_descriptors(image1_batch.to(device), layer, facet, bin)
+    descriptors1 = extractor.extract_descriptors(image1_batch.to(device), layer, facet, bin, has_register=register)
     num_patches1, load_size1 = extractor.num_patches, extractor.load_size
     print("num_patches1", num_patches1)
     image2_batch, image2_pil = extractor.preprocess(image_path2, load_size)
-    descriptors2 = extractor.extract_descriptors(image2_batch.to(device), layer, facet, bin)
+    descriptors2 = extractor.extract_descriptors(image2_batch.to(device), layer, facet, bin, has_register=register)
     num_patches2, load_size2 = extractor.num_patches, extractor.load_size
 
     # extracting saliency maps for each image
-    saliency_map1 = extractor.extract_saliency_maps(image1_batch.to(device))[0]
-    saliency_map2 = extractor.extract_saliency_maps(image2_batch.to(device))[0]
+    saliency_map1 = extractor.extract_saliency_maps(image1_batch.to(device), salency_layer, num_heads, register)[0]
+    saliency_map2 = extractor.extract_saliency_maps(image2_batch.to(device), salency_layer, num_heads, register)[0]
     # threshold saliency maps to get fg / bg masks
     fg_mask1 = saliency_map1 > thresh
     fg_mask2 = saliency_map2 > thresh
