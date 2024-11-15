@@ -14,15 +14,18 @@ from PIL import Image
 import glob
 
 num_pairs = 8
-load_size = 480
-layer = 7 
+load_size = 700
+layer = 9
+salency_layer = 11
 facet = 'key'
-bin=True 
-thresh=0.2
-model_type='dino_vits8'
-stride = 8 
-patch_size = 8 
-device = "cuda"
+bin = True 
+thresh = 0.2
+model_type = 'dinov2_vits14_reg'
+register = True
+stride = 7
+patch_size = 14
+num_heads = 6
+device = "cuda" 
 
 extractor = ViTExtractor(model_type, stride, device=device)
 
@@ -40,13 +43,17 @@ def extract_descriptors(image_1_path, image_2_path, num_pairs = num_pairs, load_
     with torch.no_grad():
         points1, points2, image1_pil, image2_pil, \
         patches_xy, desc1, desc2, num_patches = find_correspondences(image_1_path, image_2_path, num_pairs, load_size, layer,
+                                                                       salency_layer, num_heads, register,
                                                                        facet, bin, thresh, model_type, stride,
                                                                        return_patches_x_y = True)
-        desc1 = desc1.reshape((num_patches[0],num_patches[1],6528))
+
+		# Dynamically determine the descriptor dimension
+        descriptor_dimension = desc1.shape[-1]  # The last dimension of desc1 gives the descriptor dimension
+        desc1 = desc1.reshape((num_patches[0], num_patches[1], descriptor_dimension))
+
         descriptor_vectors = desc1[patches_xy[0], patches_xy[1]]
         print("num patches", num_patches)
         return patches_xy, desc1, descriptor_vectors, num_patches
-
 
 
 def extract_desc_maps(image_paths, load_size = load_size):
@@ -79,7 +86,7 @@ def extract_desc_maps(image_paths, load_size = load_size):
             image_batch_transposed = np.transpose(image_batch[0], (1,2,0))
 
             print("image1_batch.size", image_batch.size())
-            descriptors = extractor.extract_descriptors(image_batch.to(device), layer, facet, bin)
+            descriptors = extractor.extract_descriptors(image_batch.to(device), layer, facet, bin, include_cls=(not bin), has_register=register)
             patched_shape = extractor.num_patches
             descriptors = descriptors.reshape((patched_shape[0],
                                 patched_shape[1],
