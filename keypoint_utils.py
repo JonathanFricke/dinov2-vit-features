@@ -4,7 +4,7 @@ import cv2
 import open3d as o3d
 
 import sys
-sys.path.append('/home/norman/dino-vit-features')
+sys.path.append('/home/jonathan/masterthesis/masterthesis/dino-vit-features')
 
 import matplotlib.pyplot as plt
 import torch
@@ -14,17 +14,17 @@ from PIL import Image
 import glob
 
 num_pairs = 8
-load_size = 700
+load_size = 350
 layer = 9
 salency_layer = 11
 facet = 'key'
 bin = True 
-thresh = 0.2
-model_type = 'dinov2_vits14_reg'
-register = True
+thresh = 0.1
+model_type = 'dinov2-base'
+register = False
 stride = 7
 patch_size = 14
-num_heads = 6
+num_heads = 12
 device = "cuda" 
 
 extractor = ViTExtractor(model_type, stride, device=device)

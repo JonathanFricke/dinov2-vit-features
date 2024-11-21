@@ -107,10 +107,10 @@ def find_correspondences(image_path1: str, image_path2: str, num_pairs: int = 10
     img2_x_to_show = (img2_indices_to_show % num_patches2[1]).cpu().numpy()
     if return_patches_x_y:
     # make them integers
-    	img1_y_to_show = (img1_indices_to_show // num_patches1[1]).cpu().numpy()
-    	
-    	img2_y_to_show = (img2_indices_to_show // num_patches2[1]).cpu().numpy()
-    	
+        img1_y_to_show = (img1_indices_to_show // num_patches1[1]).cpu().numpy()
+        
+        img2_y_to_show = (img2_indices_to_show // num_patches2[1]).cpu().numpy()
+        
     points1, points2 = [], []
     for y1, x1, y2, x2 in zip(img1_y_to_show, img1_x_to_show, img2_y_to_show, img2_x_to_show):
         x1_show = (int(x1) - 1) * extractor.stride[1] + extractor.stride[1] + extractor.p // 2
@@ -120,7 +120,7 @@ def find_correspondences(image_path1: str, image_path2: str, num_pairs: int = 10
         points1.append((y1_show, x1_show))
         points2.append((y2_show, x2_show))
     if return_patches_x_y:
-    	return points1, points2, image1_pil, image2_pil, [img1_y_to_show, img1_x_to_show, img2_y_to_show, img2_x_to_show], descriptors1, descriptors2, num_patches1
+        return points1, points2, image1_pil, image2_pil, [img1_y_to_show, img1_x_to_show, img2_y_to_show, img2_x_to_show], descriptors1, descriptors2, num_patches1
     return points1, points2, image1_pil, image2_pil
 
 
