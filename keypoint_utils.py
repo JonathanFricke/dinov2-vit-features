@@ -1,7 +1,6 @@
 import mediapy as media
 import numpy as np
 import cv2
-import open3d as o3d
 
 import sys
 sys.path.append('/home/jonathan/masterthesis/masterthesis/dino-vit-features')
@@ -10,7 +9,6 @@ import matplotlib.pyplot as plt
 import torch
 from correspondences import find_correspondences, draw_correspondences
 from extractor import ViTExtractor
-from PIL import Image
 import glob
 
 num_pairs = 8
