@@ -9,6 +9,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 from typing import List, Tuple
+from torchvision import transforms
 
 
 def find_correspondences(image_path1: str, image_path2: str, num_pairs: int = 10, load_size: int = 224, layer: int = 9, 
@@ -36,7 +37,7 @@ def find_correspondences(image_path1: str, image_path2: str, num_pairs: int = 10
     #if extractor is None:
     extractor = ViTExtractor(model_type, stride, device=device)
     image1_batch, image1_pil = extractor.preprocess(image_path1, load_size)
-    print("image1_batch.size", image1_batch.size())
+    print("find_correspondences() image1_batch.size", image1_batch.size())
     descriptors1 = extractor.extract_descriptors(image1_batch.to(device), layer, facet, bin, has_register=register)
     num_patches1, load_size1 = extractor.num_patches, extractor.load_size
     print("num_patches1", num_patches1)
@@ -123,6 +124,128 @@ def find_correspondences(image_path1: str, image_path2: str, num_pairs: int = 10
         return points1, points2, image1_pil, image2_pil, [img1_y_to_show, img1_x_to_show, img2_y_to_show, img2_x_to_show], descriptors1, descriptors2, num_patches1
     return points1, points2, image1_pil, image2_pil
 
+
+def find_correspondences_tensor(image1: torch.tensor, image2: torch.tensor, num_pairs: int = 10, load_size: int = 224, layer: int = 9, 
+                         salency_layer: int = 11, num_heads: int = 6, register: bool = False,
+                         facet: str = 'key', bin: bool = True, thresh: float = 0.05, model_type: str = 'dinov2_vits14',
+                         stride: int = 7, return_patches_x_y: bool = True) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]],
+                                                                              Image.Image, Image.Image]:
+    """
+    finding point correspondences between two images.
+    :param image_path1: path to the first image.
+    :param image_path2: path to the second image.
+    :param num_pairs: number of outputted corresponding pairs.
+    :param load_size: size of the smaller edge of loaded images. If None, does not resize.
+    :param layer: layer to extract descriptors from.
+    :param facet: facet to extract descriptors from.
+    :param bin: if True use a log-binning descriptor.
+    :param thresh: threshold of saliency maps to distinguish fg and bg.
+    :param model_type: type of model to extract descriptors from.
+    :param stride: stride of the model.
+    :return: list of points from image_path1, list of corresponding points from image_path2, the processed pil image of
+    image_path1, and the processed pil image of image_path2.
+    """
+    # extracting descriptors for each image
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    #if extractor is None:
+    extractor = ViTExtractor(model_type, stride, device=device)
+ 
+    resize = transforms.Resize(load_size)
+    image1 = resize(image1)
+    image2 = resize(image2)
+
+    descriptors1 = extractor.extract_descriptors(image1.to(device), layer, facet, bin, has_register=register)
+    num_patches1, load_size1 = extractor.num_patches, extractor.load_size
+    print("num_patches1", num_patches1)
+    print("descriptors1", descriptors1.shape)
+    descriptors2 = extractor.extract_descriptors(image2.to(device), layer, facet, bin, has_register=register)
+    num_patches2, load_size2 = extractor.num_patches, extractor.load_size
+    print("descriptors2", descriptors2.shape)
+
+    # extracting saliency maps for each image
+    saliency_map1 = extractor.extract_saliency_maps(image1.to(device), salency_layer, num_heads, register)[0]
+    saliency_map2 = extractor.extract_saliency_maps(image2.to(device), salency_layer, num_heads, register)[0]
+
+    n_clusters = 0
+    while(n_clusters < num_pairs):
+        print(f"tresh: {thresh}")
+        # threshold saliency maps to get fg / bg masks
+        fg_mask1 = saliency_map1 > thresh
+        fg_mask2 = saliency_map2 > thresh
+
+        # calculate similarity between image1 and image2 descriptors
+        similarities = chunk_cosine_sim(descriptors1, descriptors2)
+
+        # calculate best buddies
+        image_idxs = torch.arange(num_patches1[0] * num_patches1[1], device=device)
+        sim_1, nn_1 = torch.max(similarities, dim=-1)  # nn_1 - indices of block2 closest to block1
+        sim_2, nn_2 = torch.max(similarities, dim=-2)  # nn_2 - indices of block1 closest to block2
+        sim_1, nn_1 = sim_1[0, 0], nn_1[0, 0]
+        sim_2, nn_2 = sim_2[0, 0], nn_2[0, 0]
+        bbs_mask = nn_2[nn_1] == image_idxs
+
+        # remove best buddies where at least one descriptor is marked bg by saliency mask.
+        fg_mask2_new_coors = nn_2[fg_mask2]
+        fg_mask2_mask_new_coors = torch.zeros(num_patches1[0] * num_patches1[1], dtype=torch.bool, device=device)
+        fg_mask2_mask_new_coors[fg_mask2_new_coors] = True
+        bbs_mask = torch.bitwise_and(bbs_mask, fg_mask1)
+        bbs_mask = torch.bitwise_and(bbs_mask, fg_mask2_mask_new_coors)
+
+        # applying k-means to extract k high quality well distributed correspondence pairs
+        bb_descs1 = descriptors1[0, 0, bbs_mask, :].cpu().numpy()
+        bb_descs2 = descriptors2[0, 0, nn_1[bbs_mask], :].cpu().numpy()
+        # apply k-means on a concatenation of a pairs descriptors.
+        all_keys_together = np.concatenate((bb_descs1, bb_descs2), axis=1)
+        n_clusters = min(num_pairs, len(all_keys_together))  # if not enough pairs, show all found pairs.
+        thresh /= 2
+
+    length = np.sqrt((all_keys_together ** 2).sum(axis=1))[:, None]
+    normalized = all_keys_together / length
+    kmeans = KMeans(n_clusters=n_clusters, random_state=0).fit(normalized)
+    bb_topk_sims = np.full((n_clusters), -np.inf)
+    bb_indices_to_show = np.full((n_clusters), -np.inf)
+
+    # rank pairs by their mean saliency value
+    bb_cls_attn1 = saliency_map1[bbs_mask]
+    bb_cls_attn2 = saliency_map2[nn_1[bbs_mask]]
+    bb_cls_attn = (bb_cls_attn1 + bb_cls_attn2) / 2
+    ranks = bb_cls_attn
+
+    for k in range(n_clusters):
+        for i, (label, rank) in enumerate(zip(kmeans.labels_, ranks)):
+            if rank > bb_topk_sims[label]:
+                bb_topk_sims[label] = rank
+                bb_indices_to_show[label] = i
+
+    # get coordinates to show
+    indices_to_show = torch.nonzero(bbs_mask, as_tuple=False).squeeze(dim=1)[
+        bb_indices_to_show]  # close bbs
+    img1_indices_to_show = torch.arange(num_patches1[0] * num_patches1[1], device=device)[indices_to_show]
+    img2_indices_to_show = nn_1[indices_to_show]
+    # coordinates in descriptor map's dimensions
+    print("img1_indices_to_show", img1_indices_to_show)
+    print("img2_indices_to_show", img2_indices_to_show)
+    img1_y_to_show = (img1_indices_to_show / num_patches1[1]).cpu().numpy()
+    img1_x_to_show = (img1_indices_to_show % num_patches1[1]).cpu().numpy()
+    img2_y_to_show = (img2_indices_to_show / num_patches2[1]).cpu().numpy()
+    img2_x_to_show = (img2_indices_to_show % num_patches2[1]).cpu().numpy()
+    if return_patches_x_y:
+    # make them integers
+        img1_y_to_show = (img1_indices_to_show // num_patches1[1]).cpu().numpy()
+        
+        img2_y_to_show = (img2_indices_to_show // num_patches2[1]).cpu().numpy()
+        
+    points1, points2 = [], []
+    for y1, x1, y2, x2 in zip(img1_y_to_show, img1_x_to_show, img2_y_to_show, img2_x_to_show):
+        x1_show = (int(x1) - 1) * extractor.stride[1] + extractor.stride[1] + extractor.p // 2
+        y1_show = (int(y1) - 1) * extractor.stride[0] + extractor.stride[0] + extractor.p // 2
+        x2_show = (int(x2) - 1) * extractor.stride[1] + extractor.stride[1] + extractor.p // 2
+        y2_show = (int(y2) - 1) * extractor.stride[0] + extractor.stride[0] + extractor.p // 2
+        points1.append((y1_show, x1_show))
+        points2.append((y2_show, x2_show))
+    if return_patches_x_y:
+        return points1, points2, [img1_y_to_show, img1_x_to_show, img2_y_to_show, img2_x_to_show], descriptors1, descriptors2, num_patches1
+    return points1, points2
 
 def draw_correspondences(points1: List[Tuple[float, float]], points2: List[Tuple[float, float]],
                          image1: Image.Image, image2: Image.Image) -> Tuple[plt.Figure, plt.Figure]:

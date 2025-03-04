@@ -7,7 +7,7 @@ sys.path.append('/home/jonathan/masterthesis/masterthesis/dino-vit-features')
 
 import matplotlib.pyplot as plt
 import torch
-from correspondences import find_correspondences, draw_correspondences
+from correspondences import find_correspondences, find_correspondences_tensor, draw_correspondences
 from extractor import ViTExtractor
 import glob
 
@@ -55,6 +55,32 @@ def extract_descriptors(image_1_path, image_2_path, num_pairs = num_pairs, load_
         return patches_xy, desc1, descriptor_vectors, num_patches
 
 
+def extract_descriptors_tensor(image_1, image_2, num_pairs = num_pairs, load_size = load_size):
+    """
+    Given a pair of image paths, extracs descriptors and returns the descriptor vectors.
+    Inputs: image_1_path, image_2_path: paths to the images.
+            num_pairs: number of pairs to extract.
+            load_size: size to load the images.
+    Outputs: patches_xy: indices of the extracted patches.
+              desc1: descriptor map of the first image.
+              descriptor_vectors: descriptor vectors of the first image.
+              num_patches: number of patches in the x and y direction.    
+    """
+    with torch.no_grad():
+        points1, points2, patches_xy, desc1, desc2, num_patches = find_correspondences_tensor(image_1, image_2, num_pairs, load_size, layer,
+                                                                       salency_layer, num_heads, register,
+                                                                       facet, bin, thresh, model_type, stride,
+                                                                       return_patches_x_y = True)
+
+		# Dynamically determine the descriptor dimension
+        descriptor_dimension = desc1.shape[-1]  # The last dimension of desc1 gives the descriptor dimension
+        desc1 = desc1.reshape((num_patches[0], num_patches[1], descriptor_dimension))
+
+        descriptor_vectors = desc1[patches_xy[0], patches_xy[1]]
+        print("num patches", num_patches)
+        return patches_xy, desc1, descriptor_vectors, num_patches
+
+
 def extract_desc_maps(image_paths, load_size = load_size):
     """
     Given a list of image paths, extracts descriptor maps and returns them.
@@ -84,7 +110,7 @@ def extract_desc_maps(image_paths, load_size = load_size):
             image_batch, image_pil = extractor.preprocess(image_path, load_size)
             image_batch_transposed = np.transpose(image_batch[0], (1,2,0))
 
-            print("image1_batch.size", image_batch.size())
+            print("extract_desc_maps() image1_batch.size", image_batch.size())
             descriptors = extractor.extract_descriptors(image_batch.to(device), layer, facet, bin, include_cls=(not bin), has_register=register)
             patched_shape = extractor.num_patches
             descriptors = descriptors.reshape((patched_shape[0],
@@ -97,6 +123,53 @@ def extract_desc_maps(image_paths, load_size = load_size):
             image_batch_transposed = np.array(image_batch_transposed*255, dtype = np.uint8)
             org_images_list.append(media.resize_image(image_batch_transposed, (image_batch_transposed.shape[0]//patch_size,
                                                                    image_batch_transposed.shape[1]//patch_size)))
+    return descriptors_list, org_images_list
+
+
+def extract_desc_maps_tensor(images, load_size = load_size):
+    """
+    Given a list of image paths, extracts descriptor maps and returns them.
+    Inputs: image_paths: list of image paths.
+            load_size: size to resize the images.
+    Outputs: descriptors_list: list of descriptor maps.
+              org_images_list: list of the images.
+    """
+    # if not isinstance(images, list):
+    #     images = [images]
+    # path = images[0]
+    # if isinstance(path, str):
+    #     pass
+    # else:
+    #     paths = []
+    #     for i in range(len(images)):
+    #         paths.append(f"image_{i}.png")
+    #         media.write_image( f"image_{i}.png", images[i])
+    #     images = paths
+
+    descriptors_list = []
+    org_images_list = []
+    with torch.no_grad():
+        # image_batch, image_pil = extractor.preprocess(image_batch, load_size)
+        # image_batch_transposed = np.transpose(image_batch[0], (1,2,0))
+
+
+        image_batch_transposed = images[0].permute(1,2,0)
+
+        
+
+        print("extract_desc_maps_tensor() image1_batch.size", images.size())
+        descriptors = extractor.extract_descriptors(images.to(device), layer, facet, bin, include_cls=(not bin), has_register=register)
+        patched_shape = extractor.num_patches
+        descriptors = descriptors.reshape((patched_shape[0],
+                            patched_shape[1],
+                            -1))
+
+        descriptors_list.append(descriptors.cpu())
+        image_batch_transposed = image_batch_transposed - image_batch_transposed.min()
+        image_batch_transposed = image_batch_transposed/image_batch_transposed.max()
+        image_batch_transposed = np.array(image_batch_transposed*255, dtype = np.uint8)
+        org_images_list.append(media.resize_image(image_batch_transposed, (image_batch_transposed.shape[0]//patch_size,
+                                                                image_batch_transposed.shape[1]//patch_size)))
     return descriptors_list, org_images_list
 
 
