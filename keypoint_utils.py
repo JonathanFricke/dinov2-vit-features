@@ -188,10 +188,10 @@ def extract_descriptor_nn(descriptors, emb_im, patched_shape, return_heatmaps = 
     cs_xs_list = []
     cs_list = []
     cs = torch.nn.CosineSimilarity(dim=-1)
-    print("emb_im shape", emb_im.shape)
+    # print("emb_im shape", emb_im.shape)
     for i in range(len(descriptors)):
         cs_i = cs(descriptors[i].cuda(), emb_im.cuda())
-        print("cs_i.shape", cs_i.shape)
+        # print("cs_i.shape", cs_i.shape)
         cs_i = cs_i.reshape((-1))
         cs_i_y = cs_i.argmax().cpu()//patched_shape[1]
         cs_i_x = cs_i.argmax().cpu()%patched_shape[1]
@@ -207,7 +207,7 @@ def extract_descriptor_nn(descriptors, emb_im, patched_shape, return_heatmaps = 
     return cs_ys_list, cs_xs_list
 
 
-def draw_keypoints(image, key_y, key_x, colors):
+def draw_keypoints(image, key_y, key_x, colors, vis=None):
     """
     Given an image and keypoints, draws the keypoints on the image.
     Inputs: image: image to draw the keypoints on.
@@ -225,7 +225,13 @@ def draw_keypoints(image, key_y, key_x, colors):
     for i in range(len(key_y)):
         color = colors[i]
         canvas = canvas.astype(np.uint8)
-        canvas[key_y[i]-5:key_y[i]+5,key_x[i]-5:key_x[i]+5,:] = np.array(color)
+        if vis is not None:
+            if vis[i] > 0.5:
+                canvas[key_y[i]-5:key_y[i]+5,key_x[i]-5:key_x[i]+5,:] = np.array(color)
+            else:
+                canvas[key_y[i]-5:key_y[i]+5,key_x[i]-5:key_x[i]+5,:] = np.array(color) * 0.333
+        else:
+            canvas[key_y[i]-5:key_y[i]+5,key_x[i]-5:key_x[i]+5,:] = np.array(color)
     return canvas
 
 
