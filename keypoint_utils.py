@@ -229,7 +229,7 @@ def draw_keypoints(image, key_y, key_x, colors, vis=None):
             if vis[i] > 0.5:
                 canvas[key_y[i]-5:key_y[i]+5,key_x[i]-5:key_x[i]+5,:] = np.array(color)
             else:
-                canvas[key_y[i]-5:key_y[i]+5,key_x[i]-5:key_x[i]+5,:] = np.array(color) * 0.333
+                canvas[key_y[i]-3:key_y[i]+3,key_x[i]-3:key_x[i]+3,:] = np.array(color) * 0.5
         else:
             canvas[key_y[i]-5:key_y[i]+5,key_x[i]-5:key_x[i]+5,:] = np.array(color)
     return canvas
