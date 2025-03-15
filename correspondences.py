@@ -125,7 +125,7 @@ def find_correspondences(image_path1: str, image_path2: str, num_pairs: int = 10
     return points1, points2, image1_pil, image2_pil
 
 
-def find_correspondences_tensor(image1: torch.tensor, image2: torch.tensor, num_pairs: int = 10, load_size: int = 224, layer: int = 9, 
+def find_correspondences_tensor(image1: torch.Tensor, image2: torch.Tensor, num_pairs: int = 10, load_size: int = 224, layer: int = 9, 
                          salency_layer: int = 11, num_heads: int = 6, register: bool = False,
                          facet: str = 'key', bin: bool = True, thresh: float = 0.05, model_type: str = 'dinov2_vits14',
                          stride: int = 7, return_patches_x_y: bool = True) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]],
