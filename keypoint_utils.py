@@ -132,18 +132,14 @@ def cluster_descriptor(descriptors, max_iter=20):
     # Step 1: Initialize by selecting the first descriptor for each image (or use random initialization)
     selected_indices = torch.zeros(num_images, dtype=torch.long, device=device)
     selected_descriptors = descriptors[torch.arange(num_images), selected_indices]  # [num_images, emb_size]
+    cs = torch.nn.CosineSimilarity(dim=-1)
     
     for i in range(num_descriptors):
         for it in range(max_iter):
             # Step 2: Compute the centroid of the current selections
-            centroid = selected_descriptors.mean(dim=0, keepdim=True)  # [1, emb_size]
-            
-            # Normalize descriptors and the centroid for cosine similarity
-            normalized_descriptors = torch.nn.functional.normalize(descriptors, p=2, dim=-1)  # [num_images, num_descriptors_, emb_size]
-            normalized_centroid = torch.nn.functional.normalize(centroid, p=2, dim=-1)        # [1, emb_size]
-            
+            centroid = selected_descriptors.mean(dim=0)  # [1, emb_size]
             # Step 3: Compute cosine similarity between each candidate and the centroid
-            similarity = torch.matmul(normalized_descriptors, normalized_centroid.T).squeeze(-1)  # [num_images, num_descriptors_]
+            similarity = cs(descriptors, centroid)
             
             # Step 4: For each image, select the descriptor with the highest similarity to the centroid
             new_selected_indices = similarity.argmax(dim=-1)  # [num_images]
@@ -151,7 +147,6 @@ def cluster_descriptor(descriptors, max_iter=20):
             # Check for convergence
             if torch.equal(new_selected_indices, selected_indices):
                 print(f"Converged at iteration {it}")
-
                 # Store this cluster’s selected descriptors
                 selected_descriptors_acc.append(selected_descriptors)
 
@@ -159,6 +154,7 @@ def cluster_descriptor(descriptors, max_iter=20):
                 mask = torch.arange(num_descriptors_, device=device).unsqueeze(0) != selected_indices.unsqueeze(1)
                 num_descriptors_ = num_descriptors_ - 1
                 descriptors = descriptors[mask].view(num_images, num_descriptors_, emb_size)
+                selected_indices = torch.zeros(num_images, dtype=torch.long, device=device)
                 break
             else:
                 selected_indices = new_selected_indices
@@ -185,12 +181,10 @@ def cluster_descriptor(descriptors, max_iter=20):
         descs_c = selected_descriptors_acc[c]  # [num_images, emb_size]
 
         # Compute distances to ALL cluster centroids: shape [num_images, num_clusters]
-        distances = torch.norm(
-            descs_c.unsqueeze(1) - cluster_centroids.unsqueeze(0),
-            dim=-1
-        )
+        distances = 1-cs(descs_c.unsqueeze(1), cluster_centroids.unsqueeze(0))
         # We do NOT want the distance to its own centroid to matter, so set it to 0
-        distances[:, c] = 0
+        # distances[:, c] = -1.0*distances[:, c]
+        distances[:, c] = 0.0
 
         # Sum distances to all *other* cluster centroids
         sum_distances = distances.sum(dim=1)  # [num_images]
@@ -201,7 +195,7 @@ def cluster_descriptor(descriptors, max_iter=20):
 
     # [num_clusters, emb_size]
     final_descriptors = torch.stack(final_descriptors, dim=0)
-    final_descriptors = cluster_centroids*0.5 + final_descriptors*0.5
+    # final_descriptors = cluster_centroids*0.5 + final_descriptors*0.5
     print("final_descriptors.shape:", final_descriptors.shape)
 
     return final_descriptors
@@ -223,21 +217,16 @@ def cluster_descriptor_mean(descriptors, max_iter = 20):
     # Step 1: Initialize by selecting the first descriptor for each image (or use random initialization)
     selected_indices = torch.zeros(num_images, dtype=torch.long, device=device)  # shape: [num_images]
     selected_descriptors = descriptors[torch.arange(num_images), selected_indices]  # shape: [num_images, emb_size]
+
+    cs = torch.nn.CosineSimilarity(dim=-1)
     
     for i in range(num_descriptors):
         for it in range(max_iter):
             # Step 2: Compute the centroid of the current selections
             centroid = selected_descriptors.mean(dim=0, keepdim=True)  # shape: [1, emb_size]
             
-            # Normalize descriptors and the centroid for cosine similarity computation
-            normalized_descriptors = torch.nn.functional.normalize(descriptors, p=2, dim=-1)         # [num_images, num_descriptors, emb_size]
-            normalized_centroid = torch.nn.functional.normalize(centroid, p=2, dim=-1)                 # [1, emb_size]
-            
             # Step 3: Compute cosine similarity between each candidate and the centroid.
-            # This gives a similarity score for each descriptor in each image.
-            # Using matrix multiplication for efficiency:
-            # Reshape centroid to [emb_size, 1] and then squeeze the result.
-            similarity = torch.matmul(normalized_descriptors, normalized_centroid.T).squeeze(-1)  # shape: [num_images, num_descriptors]
+            similarity = cs(descriptors, centroid)
             
             # Step 4: For each image, select the descriptor with the highest similarity to the centroid.
             new_selected_indices = similarity.argmax(dim=-1)  # shape: [num_images]
